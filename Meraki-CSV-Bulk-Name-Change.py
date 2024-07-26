@@ -1,3 +1,5 @@
+#This script uses a CSV file Downloaded from Meraki Dashboard to batch rename devices.
+
 import meraki
 import csv
 from tkinter import Tk
