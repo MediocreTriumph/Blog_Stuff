@@ -1,2 +1,2 @@
 # Blog_Stuff
-Stuff that is shared in the blog
+Stuff that I will put in a blog at some point.
