@@ -25,6 +25,7 @@ else:
         next(reader)  # Skip the header row
 
         # Iterate over each row in the CSV file
+        #This script anticipates that the source CSV is coming from Dashboard and the data is in the original columns
         for row in reader:
             serial = row[2]
             new_name = row[0]
