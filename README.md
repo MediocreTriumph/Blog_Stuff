@@ -1,2 +1,3 @@
 # Blog_Stuff
-Stuff that I will put in a blog at some point.
+
+Learn more about the scripts posted here @ https://triumphtips.com
