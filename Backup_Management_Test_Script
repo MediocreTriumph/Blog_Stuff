@@ -1,0 +1,84 @@
+# The script that I used to test the Backup Management Script. Generates some files and puts them in the directory that you specify.
+# Parameters
+$testFolder = "C:\TFTP_Backups_Test"  # Adjust this path as needed
+$deviceNames = @("Switch1", "Router1", "Firewall1", "Switch2")
+$numConfigsPerDevice = @{
+    "Switch1" = 7    # More than 5 to test deletion
+    "Router1" = 5    # Exactly 5
+    "Firewall1" = 3  # Less than 5
+    "Switch2" = 1    # Only one config
+}
+
+# Function to generate random configuration content
+function Get-RandomConfig {
+    param($baseConfig, $changePercentage)
+    $lines = $baseConfig -split "`n"
+    $newConfig = @()
+    foreach ($line in $lines) {
+        $rand = Get-Random -Minimum 1 -Maximum 101
+        if ($rand -le $changePercentage) {
+            # 50% chance to modify, 25% to add, 25% to remove
+            $action = Get-Random -Minimum 1 -Maximum 4
+            switch ($action) {
+                1 { $newConfig += $line + " (modified)" }
+                2 { $newConfig += $line; $newConfig += "New line: " + (Get-Random) }
+                3 { } # Remove by not adding
+                default { $newConfig += $line }
+            }
+        } else {
+            $newConfig += $line
+        }
+    }
+    return $newConfig -join "`n"
+}
+
+# Ensure test folder exists
+if (!(Test-Path $testFolder)) {
+    New-Item -ItemType Directory -Path $testFolder | Out-Null
+}
+
+# Generate config files for each device
+foreach ($device in $deviceNames) {
+    $baseConfig = @"
+hostname $device
+!
+interface GigabitEthernet0/0
+ ip address 192.168.1.1 255.255.255.0
+ no shutdown
+!
+interface GigabitEthernet0/1
+ ip address 10.0.0.1 255.255.255.0
+ no shutdown
+!
+ip route 0.0.0.0 0.0.0.0 192.168.1.254
+!
+line con 0
+ login local
+line vty 0 4
+ login local
+ transport input ssh
+!
+end
+"@
+
+    for ($i = 1; $i -le $numConfigsPerDevice[$device]; $i++) {
+        $changePercentage = 10 * $i  # Increase changes for each version
+        $config = Get-RandomConfig -baseConfig $baseConfig -changePercentage $changePercentage
+        
+        # Generate a timestamp in the past
+        $timestamp = (Get-Date).AddDays(-$i).AddHours(-$i).ToString("yyyyMMdd_HHmmss")
+        $fileName = "$device-confg_$timestamp"
+        
+        # Create the file with the generated config
+        $filePath = Join-Path $testFolder $fileName
+        $config | Out-File -FilePath $filePath -Encoding ASCII
+        
+        # Set the creation time to match the filename
+        $creationTime = [DateTime]::ParseExact($timestamp, "yyyyMMdd_HHmmss", $null)
+        (Get-Item $filePath).CreationTime = $creationTime
+        
+        Write-Host "Created test file: $fileName"
+    }
+}
+
+Write-Host "Test file generation complete."
