@@ -1,0 +1,114 @@
+# This script is designed to be run as a scheduled task for network device backup management on a windows machine.
+# The script will create a folder for each device (by name), store up to 5 configuration files and up to 5 diff files which contain the changes between versions.
+# It also appends the creation time to the file because it was easier than getting it done with an EEM applet.
+# Parameters
+$parentFolder = "C:\TFTP_Backups_Test"  # Adjust this path as needed
+$maxBackups = 5
+$logFile = Join-Path $parentFolder "backup_management.log"
+
+# Function to log messages
+function Write-Log {
+    param($message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$timestamp - $message" | Out-File -Append -FilePath $logFile
+    Write-Host $message
+}
+
+# Function to create diff file
+function Create-DiffFile {
+    param($newFile, $oldFile, $diffFile)
+    $newContent = Get-Content $newFile
+    $oldContent = Get-Content $oldFile
+    $diff = Compare-Object $oldContent $newContent
+    
+    $diffOutput = foreach ($line in $diff) {
+        if ($line.SideIndicator -eq "=>") {
+            $line.InputObject
+        } elseif ($line.SideIndicator -eq "<=") {
+            "!$($line.InputObject)"
+        }
+    }
+    
+    $diffOutput | Out-File $diffFile
+}
+
+# Function to extract timestamp from filename
+function Get-TimestampFromFilename {
+    param($filename)
+    if ($filename -match '(\d{8}_\d{6})') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+# Main script
+try {
+    Write-Log "Starting backup management process"
+
+    # Get all config files in the parent folder
+    $configFiles = Get-ChildItem -Path $parentFolder -Filter "*-confg*" | Where-Object { !$_.PSIsContainer }
+
+    foreach ($file in $configFiles) {
+        # Extract device name (everything before "-confg")
+        $deviceName = $file.Name -replace '-confg.*$', ''
+        $deviceFolder = Join-Path $parentFolder $deviceName
+
+        # Create device folder if it doesn't exist
+        if (!(Test-Path $deviceFolder)) {
+            New-Item -ItemType Directory -Path $deviceFolder | Out-Null
+            Write-Log "Created folder for device: $deviceName"
+        }
+
+        # Move file to device folder (keeping original filename)
+        $destinationPath = Join-Path $deviceFolder $file.Name
+        Move-Item -Path $file.FullName -Destination $destinationPath -Force
+        Write-Log "Moved $($file.Name) to $deviceName folder"
+
+        # Get all config files for this device
+        $deviceConfigs = Get-ChildItem -Path $deviceFolder -Filter "*-confg*" | Sort-Object CreationTime -Descending
+
+        # Create diff files
+        for ($i = 0; $i -lt $deviceConfigs.Count - 1; $i++) {
+            $newConfig = $deviceConfigs[$i]
+            $oldConfig = $deviceConfigs[$i + 1]
+            $newTimestamp = Get-TimestampFromFilename $newConfig.Name
+            $oldTimestamp = Get-TimestampFromFilename $oldConfig.Name
+            $diffFileName = "{0}_{1}-diff.txt" -f $newTimestamp, $oldTimestamp
+            $diffFile = Join-Path $deviceFolder $diffFileName
+            if (!(Test-Path $diffFile)) {
+                Create-DiffFile -newFile $newConfig.FullName -oldFile $oldConfig.FullName -diffFile $diffFile
+                Write-Log "Created diff file: $diffFileName"
+            }
+        }
+
+        # Get all files (configs and diffs) for this device
+        $allFiles = Get-ChildItem -Path $deviceFolder | Sort-Object CreationTime -Descending
+
+        # Separate configs and diffs
+        $configs = $allFiles | Where-Object { $_.Name -like "*-confg*" }
+        $diffs = $allFiles | Where-Object { $_.Name -like "*-diff.txt" }
+
+        # Delete oldest configs if there are more than $maxBackups
+        if ($configs.Count -gt $maxBackups) {
+            $configsToDelete = $configs[$maxBackups..($configs.Count-1)]
+            foreach ($config in $configsToDelete) {
+                Remove-Item $config.FullName -Force
+                Write-Log "Deleted old config: $($config.Name)"
+            }
+        }
+
+        # Delete oldest diffs if there are more than $maxBackups
+        if ($diffs.Count -gt $maxBackups) {
+            $diffsToDelete = $diffs[$maxBackups..($diffs.Count-1)]
+            foreach ($diff in $diffsToDelete) {
+                Remove-Item $diff.FullName -Force
+                Write-Log "Deleted old diff: $($diff.Name)"
+            }
+        }
+    }
+
+    Write-Log "Backup management process completed successfully"
+}
+catch {
+    Write-Log "Error occurred: $_"
+}
