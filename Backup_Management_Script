@@ -1,4 +1,4 @@
-# This script is designed to be run as a scheduled task for network device backup management on a windows machine.
+# This PowerShell script is designed to be run as a scheduled task for network device backup management on a windows machine.
 # The script will create a folder for each device (by name), store up to 5 configuration files and up to 5 diff files which contain the changes between versions.
 # It also appends the creation time to the file because it was easier than getting it done with an EEM applet.
 # Parameters
