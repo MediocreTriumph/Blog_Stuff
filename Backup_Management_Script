@@ -1,114 +1,114 @@
-# This PowerShell script is designed to be run as a scheduled task for network device backup management on a windows machine.
-# The script will create a folder for each device (by name), store up to 5 configuration files and up to 5 diff files which contain the changes between versions.
-# It also appends the creation time to the file because it was easier than getting it done with an EEM applet.
+import os
+import shutil
+import datetime
+import re
+import difflib
+from pathlib import Path
+
 # Parameters
-$parentFolder = "C:\TFTP_Backups_Test"  # Adjust this path as needed
-$maxBackups = 5
-$logFile = Join-Path $parentFolder "backup_management.log"
+parent_folder = r"C:\TFTP_Backups_Test"  # Adjust this path as needed
+max_backups = 5
+log_file = os.path.join(parent_folder, "backup_management.log")
 
-# Function to log messages
-function Write-Log {
-    param($message)
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "$timestamp - $message" | Out-File -Append -FilePath $logFile
-    Write-Host $message
-}
+def log_message(message):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"{timestamp} - {message}"
+    print(log_entry)
+    with open(log_file, "a") as f:
+        f.write(log_entry + "\n")
 
-# Function to create diff file
-function Create-DiffFile {
-    param($newFile, $oldFile, $diffFile)
-    $newContent = Get-Content $newFile
-    $oldContent = Get-Content $oldFile
-    $diff = Compare-Object $oldContent $newContent
+def create_diff_file(old_file, new_file, diff_file, context_lines=10):
+    with open(old_file, 'r') as f1, open(new_file, 'r') as f2:
+        old_lines = f1.readlines()
+        new_lines = f2.readlines()
+
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
     
-    $diffOutput = foreach ($line in $diff) {
-        if ($line.SideIndicator -eq "=>") {
-            $line.InputObject
-        } elseif ($line.SideIndicator -eq "<=") {
-            "!$($line.InputObject)"
-        }
-    }
-    
-    $diffOutput | Out-File $diffFile
-}
+    with open(diff_file, 'w') as f:
+        for opcode in matcher.get_opcodes():
+            tag, i1, i2, j1, j2 = opcode
+            
+            if tag == 'replace':
+                # Check if the replaced lines are similar within the context
+                old_block = old_lines[max(0, i1-context_lines):min(len(old_lines), i2+context_lines)]
+                new_block = new_lines[max(0, j1-context_lines):min(len(new_lines), j2+context_lines)]
+                
+                for line in old_lines[i1:i2]:
+                    if any(difflib.SequenceMatcher(None, line, new_line).ratio() > 0.8 for new_line in new_block):
+                        f.write("(Modified): " + line.rstrip() + " # Modified\n")
+                    else:
+                        f.write("(Removed): " + line)
+                
+                for line in new_lines[j1:j2]:
+                    if all(difflib.SequenceMatcher(None, line, old_line).ratio() <= 0.8 for old_line in old_block):
+                        f.write("(Added): " + line)
+            
+            elif tag == 'delete':
+                for line in old_lines[i1:i2]:
+                    f.write("(Removed): " + line)
+            
+            elif tag == 'insert':
+                for line in new_lines[j1:j2]:
+                    f.write("(Added): " + line)
+            
+            elif tag == 'equal':
+                if i2 - i1 <= 2:  # Only show short contexts
+                    for line in old_lines[i1:i2]:
+                        f.write("(Context): " + line)
 
-# Function to extract timestamp from filename
-function Get-TimestampFromFilename {
-    param($filename)
-    if ($filename -match '(\d{8}_\d{6})') {
-        return $Matches[1]
-    }
-    return $null
-}
+        # Ensure the file ends with a newline
+        f.write('\n')
 
-# Main script
-try {
-    Write-Log "Starting backup management process"
+def get_timestamp_from_filename(filename):
+    match = re.search(r'(\d{8}_\d{6})', filename)
+    return match.group(1) if match else None
 
-    # Get all config files in the parent folder
-    $configFiles = Get-ChildItem -Path $parentFolder -Filter "*-confg*" | Where-Object { !$_.PSIsContainer }
+def main():
+    log_message("Starting backup management process")
 
-    foreach ($file in $configFiles) {
-        # Extract device name (everything before "-confg")
-        $deviceName = $file.Name -replace '-confg.*$', ''
-        $deviceFolder = Join-Path $parentFolder $deviceName
+    # Process all config files in the parent folder
+    for file in Path(parent_folder).glob("*-confg*"):
+        if file.is_file():
+            device_name = file.name.split('-confg')[0]
+            device_folder = Path(parent_folder) / device_name
 
-        # Create device folder if it doesn't exist
-        if (!(Test-Path $deviceFolder)) {
-            New-Item -ItemType Directory -Path $deviceFolder | Out-Null
-            Write-Log "Created folder for device: $deviceName"
-        }
+            # Create device folder if it doesn't exist
+            device_folder.mkdir(exist_ok=True)
+            log_message(f"Created folder for device: {device_name}")
 
-        # Move file to device folder (keeping original filename)
-        $destinationPath = Join-Path $deviceFolder $file.Name
-        Move-Item -Path $file.FullName -Destination $destinationPath -Force
-        Write-Log "Moved $($file.Name) to $deviceName folder"
+            # Move file to device folder
+            shutil.move(str(file), str(device_folder / file.name))
+            log_message(f"Moved {file.name} to {device_name} folder")
 
-        # Get all config files for this device
-        $deviceConfigs = Get-ChildItem -Path $deviceFolder -Filter "*-confg*" | Sort-Object CreationTime -Descending
+    # Process each device folder
+    for device_folder in Path(parent_folder).iterdir():
+        if device_folder.is_dir():
+            # Create diff files
+            config_files = sorted(device_folder.glob("*-confg*"), key=os.path.getmtime, reverse=True)
+            for i in range(len(config_files) - 1):
+                new_config = config_files[i]
+                old_config = config_files[i + 1]
+                new_timestamp = get_timestamp_from_filename(new_config.name)
+                old_timestamp = get_timestamp_from_filename(old_config.name)
+                diff_filename = f"{old_timestamp}_{new_timestamp}-diff.txt"
+                diff_file = device_folder / diff_filename
+                if not diff_file.exists():
+                    create_diff_file(str(old_config), str(new_config), str(diff_file))
+                    log_message(f"Created diff file: {diff_filename}")
 
-        # Create diff files
-        for ($i = 0; $i -lt $deviceConfigs.Count - 1; $i++) {
-            $newConfig = $deviceConfigs[$i]
-            $oldConfig = $deviceConfigs[$i + 1]
-            $newTimestamp = Get-TimestampFromFilename $newConfig.Name
-            $oldTimestamp = Get-TimestampFromFilename $oldConfig.Name
-            $diffFileName = "{0}_{1}-diff.txt" -f $newTimestamp, $oldTimestamp
-            $diffFile = Join-Path $deviceFolder $diffFileName
-            if (!(Test-Path $diffFile)) {
-                Create-DiffFile -newFile $newConfig.FullName -oldFile $oldConfig.FullName -diffFile $diffFile
-                Write-Log "Created diff file: $diffFileName"
-            }
-        }
+            # Manage config files
+            config_files = sorted(device_folder.glob("*-confg*"), key=os.path.getmtime, reverse=True)
+            for config_file in config_files[max_backups:]:
+                config_file.unlink()
+                log_message(f"Deleted old config: {config_file.name}")
 
-        # Get all files (configs and diffs) for this device
-        $allFiles = Get-ChildItem -Path $deviceFolder | Sort-Object CreationTime -Descending
+            # Manage diff files
+            diff_files = sorted(device_folder.glob("*-diff.txt"), key=os.path.getmtime, reverse=True)
+            for diff_file in diff_files[max_backups:]:
+                diff_file.unlink()
+                log_message(f"Deleted old diff: {diff_file.name}")
 
-        # Separate configs and diffs
-        $configs = $allFiles | Where-Object { $_.Name -like "*-confg*" }
-        $diffs = $allFiles | Where-Object { $_.Name -like "*-diff.txt" }
+    log_message("Backup management process completed successfully")
 
-        # Delete oldest configs if there are more than $maxBackups
-        if ($configs.Count -gt $maxBackups) {
-            $configsToDelete = $configs[$maxBackups..($configs.Count-1)]
-            foreach ($config in $configsToDelete) {
-                Remove-Item $config.FullName -Force
-                Write-Log "Deleted old config: $($config.Name)"
-            }
-        }
-
-        # Delete oldest diffs if there are more than $maxBackups
-        if ($diffs.Count -gt $maxBackups) {
-            $diffsToDelete = $diffs[$maxBackups..($diffs.Count-1)]
-            foreach ($diff in $diffsToDelete) {
-                Remove-Item $diff.FullName -Force
-                Write-Log "Deleted old diff: $($diff.Name)"
-            }
-        }
-    }
-
-    Write-Log "Backup management process completed successfully"
-}
-catch {
-    Write-Log "Error occurred: $_"
-}
+if __name__ == "__main__":
+    main()
