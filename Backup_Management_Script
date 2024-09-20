@@ -4,6 +4,7 @@ import datetime
 import re
 import difflib
 from pathlib import Path
+import sys
 
 # Parameters
 parent_folder = r"C:\TFTP_Backups_Test"  # Adjust this path as needed
@@ -18,9 +19,12 @@ def log_message(message):
         f.write(log_entry + "\n")
 
 def create_diff_file(old_file, new_file, diff_file, context_lines=10):
-    with open(old_file, 'r') as f1, open(new_file, 'r') as f2:
-        old_lines = f1.readlines()
-        new_lines = f2.readlines()
+    try:
+        with open(old_file, 'r') as f1, open(new_file, 'r') as f2:
+            old_lines = f1.readlines()
+            new_lines = f2.readlines()
+    except UnicodeDecodeError:
+        raise ValueError(f"One or both files are not text files or use an unsupported encoding: {old_file}, {new_file}")
 
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
     
@@ -63,6 +67,18 @@ def get_timestamp_from_filename(filename):
     match = re.search(r'(\d{8}_\d{6})', filename)
     return match.group(1) if match else None
 
+def validate_files(old_file, new_file):
+    if not old_file.exists():
+        raise FileNotFoundError(f"The old file does not exist: {old_file}")
+    if not new_file.exists():
+        raise FileNotFoundError(f"The new file does not exist: {new_file}")
+    if old_file.suffix != new_file.suffix:
+        raise ValueError(f"The two files have different extensions: {old_file.suffix} and {new_file.suffix}")
+    if old_file.stat().st_size == 0:
+        raise ValueError(f"The old file is empty: {old_file}")
+    if new_file.stat().st_size == 0:
+        raise ValueError(f"The new file is empty: {new_file}")
+
 def main():
     log_message("Starting backup management process")
 
@@ -83,7 +99,6 @@ def main():
     # Process each device folder
     for device_folder in Path(parent_folder).iterdir():
         if device_folder.is_dir():
-            # Create diff files
             config_files = sorted(device_folder.glob("*-confg*"), key=os.path.getmtime, reverse=True)
             for i in range(len(config_files) - 1):
                 new_config = config_files[i]
@@ -93,8 +108,13 @@ def main():
                 diff_filename = f"{old_timestamp}_{new_timestamp}-diff.txt"
                 diff_file = device_folder / diff_filename
                 if not diff_file.exists():
-                    create_diff_file(str(old_config), str(new_config), str(diff_file))
-                    log_message(f"Created diff file: {diff_filename}")
+                    try:
+                        validate_files(old_config, new_config)
+                        create_diff_file(str(old_config), str(new_config), str(diff_file))
+                        log_message(f"Created diff file: {diff_filename}")
+                    except (FileNotFoundError, ValueError) as e:
+                        log_message(f"Error creating diff file {diff_filename}: {e}")
+                        continue
 
             # Manage config files
             config_files = sorted(device_folder.glob("*-confg*"), key=os.path.getmtime, reverse=True)
@@ -111,4 +131,8 @@ def main():
     log_message("Backup management process completed successfully")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        sys.exit(1)
